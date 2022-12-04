@@ -1,0 +1,5 @@
+include src/vtrain/data/*.*
+# recursive-include src/vvf/project *.*
+
+prune doc
+

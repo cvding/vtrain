@@ -1,0 +1,21 @@
+
+common:
+  job_name: "cub-bird"
+  job_desc: "just a demo project config"
+  save_root: "./"
+  mode: "test" # ["train", "test"]
+  gpu_idx: [0] # 1. 单机多卡/单卡 [0, 1, 2] | [[0, 1, 2]] 2. 单机多卡 [[0, 1, 2], [0, 1, 2]]
+  backend: "sgpu" # ["ddp", "dp", "sgpu"]
+  seed: 0
+  cuda_deterministic: true
+  ddp:
+    find_unused_parameters: true
+    use_spawn: false
+  max_epoch: 10
+  verbose_interval: 5
+  ckpt_path: './cub-bird.sgpu/version_1/models/cub-bird_9.pth'
+  checkpoint:
+    save_each_iter: ~
+    save_maxs: 50
+    watch_value: ~
+    best_type: 'max'

@@ -1,0 +1,11 @@
+numpy
+opencv-python
+tqdm >= 4.61.0
+pillow
+func_timeout
+torch >= 1.7.0
+torchvision
+requests
+lxml
+ml-collections
+tensorboard
