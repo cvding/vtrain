@@ -9,13 +9,13 @@ from distutils.core import setup
 from setuptools import find_packages
 
 
-setup(name='itrain',  # 包名
+setup(name='vtrain',  # 包名
       version='1.0.0',  # 版本号
       description='my trainer for network',
       long_description='',
       author='zhifeng.ding',
       author_email='zhifeng.ding@vivo.com',
-      url='https://gitlab.vmic.xyz/11110558/itrain',
+      url='https://github.com/cvding/vtrain.git',
       license='',
       install_requires=['pyaml'],
       dependency_links=[

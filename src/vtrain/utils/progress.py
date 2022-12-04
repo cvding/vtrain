@@ -1,8 +1,10 @@
 from collections import OrderedDict
 from copy import deepcopy as dcopy
 
+
 class AverageMeter(object):
     """Computes and stores the average and current value"""
+
     def __init__(self, name, fmt=':f', hall=True):
         self.name = name
         self.fmt = fmt
@@ -23,13 +25,13 @@ class AverageMeter(object):
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count
-    
+
     def get(self):
         return self.avg if self.count else None
-    
+
     def last(self):
         return self.val if self.count else None
-    
+
     def empty(self):
         return self.count == 0
 
@@ -45,31 +47,31 @@ class ProgressMeter(object):
         self.meters = OrderedDict()
         self.add(meters)
         self.set(num_batches=num_batches, prefix=prefix)
-    
+
     def reset(self):
         for key in self.meters.keys():
             self.meters[key].reset()
-    
+
     def add(self, meters):
         if isinstance(meters, AverageMeter) and \
-            meters.name not in self.meters.keys():
+                meters.name not in self.meters.keys():
             self.meters[meters.name] = dcopy(meters)
         elif isinstance(meters, list):
             for meter in meters:
                 if isinstance(meter, AverageMeter) and \
-                    meter.name not in self.meters.keys():
-                    self.meters[meter.name] = dcopy(meter) 
+                        meter.name not in self.meters.keys():
+                    self.meters[meter.name] = dcopy(meter)
 
     def set(self, num_batches=-1, prefix=""):
         if num_batches > 0:
             self.batch_fmtstr = self._get_batch_fmtstr(num_batches)
-        
+
         if prefix != "":
             self.prefix = prefix
-    
+
     def update(self, name, value, n=1):
         self.meters[name].update(value, n)
-    
+
     def get(self, name):
         return self.meters[name].get()
 
@@ -83,7 +85,7 @@ class ProgressMeter(object):
         num_digits = len(str(num_batches // 1))
         fmt = '{:' + str(num_digits) + 'd}'
         return '[' + fmt + '/' + fmt.format(num_batches) + ']'
-    
+
     def __str__(self):
         entries = [self.prefix]
         for meter in self.meters.values():

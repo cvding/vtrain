@@ -1,6 +1,5 @@
 import os
 
-os.environ['OPENBLAS_NUM_THREADS'] = '2'
 import argparse
 import random
 import numpy as np
@@ -19,6 +18,8 @@ from ..callback.checkpoint import CheckPoint
 from torch.utils.tensorboard import SummaryWriter
 from loguru import logger
 
+os.environ['OPENBLAS_NUM_THREADS'] = '2'
+
 
 class EngineFileSystem:
     def __init__(self) -> None:
@@ -28,10 +29,9 @@ class EngineFileSystem:
 
     def deploy(self):
         cconf = self.capp['common']
-        paths = None
         job_name = '{}.{}'.format(cconf.job_name, cconf.backend)
 
-        def create_vesion(path):
+        def create_version(path):
             idx = -1
             if not os.path.exists(path):
                 return "version_1"
@@ -46,10 +46,9 @@ class EngineFileSystem:
 
             return "version_%d" % (idx + 1)
 
-
         # default version "version_1"
         root = os.path.join(cconf.save_root, job_name)
-        version = create_vesion(root) 
+        version = create_version(root)
         save_root = os.path.join(root, version)
 
         paths = {
@@ -58,14 +57,19 @@ class EngineFileSystem:
             "model": os.path.join(save_root, 'models')
         }
 
+        # 在每一台机器的local_rank=0这个进程上创建文件夹，记录log
+        # 第一台机器上保存模型和summary
         ctip('yellow', '|wait for director builder...', show=True)
-        if self.init:
+        if self.args.local_rank <= 0:
             for name in paths.keys():
+                if name in ['summary', 'model'] and self.args.pidx != 0:
+                    continue
                 os.makedirs(paths[name])
             ctip('green', '|director build done.', show=True)
             ctip("cyan", "|model save root: %s" % (paths['root']), show=True)
 
-        while True:
+        # 在每台机器上，都需要等待local_rank=0的进程将文件夹目录建立好以后才能往下执行
+        while self.args.local_rank > 0:
             if os.path.exists(save_root):
                 break
 
@@ -74,6 +78,7 @@ class EngineFileSystem:
         self.capp.conf['common']['glob_rank'] = self.args.glob_rank
         self.capp.conf['common']['gpus'] = self.args.gpu_idx
         self.capp.conf['common']['num_machine'] = self.args.num_machine
+        self.capp.conf['common']['idx_machine'] = self.args.pidx
         self.capp.conf['common']['version'] = version.split('_')[-1]
 
         if self.capp.conf['common']['backend'] == 'ddp':
@@ -82,27 +87,66 @@ class EngineFileSystem:
             ctip('green', 'bold', "master address: %s" % (self.capp.conf['common']['ddp']['dist_url']), show=True)
         return self.capp
 
+    # @staticmethod
+    # def parse_local(gpu_idxs):
+    #     gpus = {}
+    #     is_multi = isinstance(gpu_idxs[0], list)
+    #     is_each = 1 if not is_multi else len(gpu_idxs[0])
+    #     for mdx, gpu in enumerate(gpu_idxs):
+    #         flag = isinstance(gpu, list)
+    #         if flag:
+    #             gpus[mdx] = gpu
+    #             assert is_each == len(gpu), "Error: GPU each machine must be equal!"
+    #         assert is_multi == flag, "Error: GPU Index set Wrong!"
+    #
+    #     if not is_multi:
+    #         gpus[0] = gpu_idxs
+    #
+    #     return len(gpus), gpus
+
     @staticmethod
     def parse_local(gpu_idxs):
-        gpus = {}
-        is_multi = isinstance(gpu_idxs[0], list)
-        is_each = 1 if not is_multi else len(gpu_idxs[0])
-        for mdx, gpu in enumerate(gpu_idxs):
-            flag = isinstance(gpu, list)
-            if flag:
-                gpus[mdx] = gpu
-                assert is_each == len(gpu), "Error: GPU each machine must be equal!"
-            assert is_multi == flag, "Error: GPU Index set Wrong!"
+        # [[0, 1], [0, 1]] 多机多卡
+        # [[0, 1, 2]] 单机多卡
+        # [0, 1, 2] 单机多卡
+        # 机器数量, 每一台机器的卡列表, 卡对应的机器（glob_rank对应哪一台机器）
+        is_multi = None
+        gmap = []
+        for i in gpu_idxs:
+            multi = isinstance(gpu_idxs[i], list) and len(gpu_idxs[i]) > 0
+            if is_multi is None:
+                is_multi = multi
+            assert is_multi == multi, "make sure gpu_idx type is the same."
 
-        if not is_multi:
-            gpus[0] = gpu_idxs
+        if is_multi and len(gpu_idxs) > 1:
+            k = 0
+            for i in gpu_idxs:
+                if len(gpu_idxs[i]) == 0:
+                    continue
+                for _ in gpu_idxs[i]:
+                    gmap[k] = i
+                    k += 1
+            return len(gpu_idxs), gpu_idxs, gmap
+        else:
+            if is_multi:
+                gmap = list(range(len(gpu_idxs[0])))
+            else:
+                gmap = list(range(len(gpu_idxs)))
+                gpu_idxs = [gpu_idxs]
 
-        return len(gpus), gpus
+            return 1, gpu_idxs, gmap
 
     def __args(self, desc='vengine one worker...'):
         parser = argparse.ArgumentParser(description=desc)
         parser.add_argument('-c', '--conf', default='./conf.yaml', help='input your config path')
 
+        # local_rank：表示每一台机器中，进程的索引
+        # glob_rank: 表示进程组中，进程的索引
+        # 一个进程组有2台机器，1台机器有4张卡，1台机器有8张卡 gpu_idxs=[[0, 1, 2, 3], [0, 1, 2, 3, 4, 5, 6, 7]]
+        # 第一台机器local_rank = [0, 1, 2, 3], 第二台机器local_rank = [0, 1, 2, 3, 4, 5, 6, 7]
+        # 第一台机器glob_rank = [0, 1, 2, 3], 第二台机器glob_rank = [4, 5, 6, 7, 8, 9, 10, 11]
+        # 表示这个进程组中有12个进程，以glob_rank=0这个进程为主进程节点，1~3进程位于第一台机器，4~11进程位于第二台机器
+        # 注意gpu_idxs多机中卡是有顺序的
         parser.add_argument('-r', '--local_rank', default=-1, type=int, help='local process idx for distributed training|-1')
         parser.add_argument('-g', '--glob_rank', default=-1, type=int, help='global process idx for distributed training|-1')
         parser.add_argument('-a', '--master_addr', default='127.0.0.1', help='input your master address for distributed training')
@@ -113,7 +157,7 @@ class EngineFileSystem:
 
         assert len(conf['common']['gpu_idx']) > 0, 'please config the [common][gpu_idx] parameter'
 
-        num_machine, gpus = self.parse_local(conf['common']['gpu_idx'])
+        num_machine, gpus, gmap = self.parse_local(conf['common']['gpu_idx'])
         if num_machine <= 1:
             args.glob_rank = args.local_rank
 
@@ -130,7 +174,7 @@ class EngineFileSystem:
             if master_port < 0:
                 master_port = find_free_port()
 
-            if conf['vtraining']['enable']:
+            if not conf['common']['ddp']['use_spawn']:
                 assert rank >= 0 and local_rank >= 0 and master_port > 0 and master_addr
 
             args.glob_rank = rank if num_machine > 1 else local_rank          # 全局进程索引
@@ -138,25 +182,19 @@ class EngineFileSystem:
             args.master_addr = "tcp://" + master_addr
             args.master_port = master_port
 
-            #end_gpu_idx = num_machine*len(gpus[0]) - 1
-            end_gpu_idx = len(gpus[0]) - 1
-            if conf['vtraining']['enable']:
-                self.init = args.glob_rank == end_gpu_idx # vtraining 脚本要求
-            else:
-                self.init = args.glob_rank <= 0
-        else:
-            args.glob_rank = -1
-            self.init = True
-
-        pidx = 0 if args.glob_rank < 0 else args.glob_rank // len(gpus[0])
-        os.environ['CUDA_VISIBLE_DEVICES'] = ','.join([str(i) for i in gpus[pidx]])
+        # 根据glob_rank查询该进程是属于哪一台机器
+        args.pidx = 0 if args.glob_rank < 0 else gmap[args.glob_rank]
+        os.environ['CUDA_VISIBLE_DEVICES'] = ','.join([str(i) for i in gpus[args.pidx]])
         args.num_machine = num_machine
-        args.nprocs = num_machine * len(gpus[pidx])
+        args.nprocs = len(gmap)
         args.conf = conf
-        args.gpu_idx = [i for i in range(len(gpus[pidx]))]
-        assert len(args.gpu_idx) <= torch.cuda.device_count(), 'Error: GPU Resource is not Right!'
+        args.gpu_idx = [i for i in range(len(gpus[args.pidx]))]
+        device_count = torch.cuda.device_count()
+        assert len(args.gpu_idx) <= device_count, \
+            'Error: GPU[%d] Resource is not match![%d]' % (device_count, len(args.gpu_idx))
 
         return args
+
 
 class Engine(CallBackList):
     def __init__(self, conf, *args, **kwargs):
@@ -195,7 +233,7 @@ class Engine(CallBackList):
 
     # def __del__(self):
     #     try:
-    #         if self.cconf.backend == 'ddp' and self.cconf.mode in ['train', 'test']:
+    #         if self.cconf.backend == 'ddp' and self.cconf.mode in ['train', 'example']:
     #             dist.destroy_process_group()
     #     except Exception as e:
     #             print(e)
@@ -224,7 +262,7 @@ class Engine(CallBackList):
 
     def on_validation_step(self, datas, **kwargs):
         """
-        evalue your network on test so you can log every images or videos
+        evalue your network on example so you can log every images or videos
         """
         images, labels = datas[:2]
         preds = self.forward(images)
@@ -325,16 +363,35 @@ class Engine(CallBackList):
         self._on_train_end(**self.__get_info())
 
     def _test(self, test_loader):
-        """测试
+        total = len(test_loader)
+        pbar = tqdm(total=total, desc='test', leave=True, disable=(self.glob_rank > 0), colour='yellow')
 
-        Args:
-            dataset (Dataset): 输入torch类型的dataset，做测试集
-        """
-        info = self.__get_info()
-        self._on_test_epoch_begin(**info)
-        self.glob_step = 1
-        self.__validation(test_loader)
-        self._on_test_epoch_end(**info)
+        for name in self._nets.keys():
+            self.set_net_state(name, False)
+
+        copy_prog = dcopy(self.__progress)
+
+        self.__progress.set(num_batches=total, prefix='Test :[%3d]' % (self.get_epoch_index()))
+        self.__progress.reset()
+
+        self._on_validation_epoch_begin(**self.__get_info())
+        with torch.no_grad():
+            for datas in test_loader:
+                info = self.__get_info()
+                datas = self._cuda_data(datas)
+                loss = self._on_test_step(datas, **info)
+
+                if loss is not None:
+                    self.__progress.update('Loss', loss.item(), 1)
+                    pbar.set_postfix_str("loss: %.6f" % self.__progress.get('Loss'))
+                pbar.update()
+        value = self.__progress.get('Loss')
+        if value is not None:
+            self.watch_value('loss', {"test": value}, self.get_epoch_index())
+        if self.local_rank <= 0:
+            self.logger.info(str(self.__progress))
+        self.__progress.update_meters(copy_prog)
+        return self._on_test_epoch_end(**self.__get_info())
 
     def __validation(self, loader, pbar=None):
         if loader is not None:
@@ -350,16 +407,16 @@ class Engine(CallBackList):
 
             copy_prog = dcopy(self.__progress)
 
-            self.__progress.set(num_batches=total, prefix='Test  :[%3d]' % (self.get_epoch_index()))
+            self.__progress.set(num_batches=total, prefix='Validation :[%3d]' % (self.get_epoch_index()))
             self.__progress.reset()
 
             self._on_validation_epoch_begin(**self.__get_info())
-            _val_fun = self._on_test_step if self.cconf.mode == 'test' else self._on_validation_step
+            _val_fun = self._on_test_step if self.cconf.mode == 'example' else self._on_validation_step
             with torch.no_grad():
                 for datas in loader:
                     info = self.__get_info()
                     datas = self._cuda_data(datas)
-                    loss = _val_fun(datas, **info)
+                    loss = self._on_validation_step(datas, **info)
 
                     if loss is not None:
                         self.__progress.update('Loss', loss.item(), 1)
@@ -367,7 +424,7 @@ class Engine(CallBackList):
                     pbar.update()
             value = self.__progress.get('Loss')
             if value is not None:
-                self.watch_value('loss', {"test": value}, self.get_epoch_index())
+                self.watch_value('loss', {"validation": value}, self.get_epoch_index())
             if self.local_rank <= 0:
                 self.logger.info(str(self.__progress))
             self.__progress.update_meters(copy_prog)
@@ -375,12 +432,17 @@ class Engine(CallBackList):
 
     def __init_dist(self):
         if self.cconf.backend == 'ddp':
-            # torch.set_num_threads(1)
-            # self.logger.info("RANK: %d GANK: %d NODE: %d" % (self.local_rank, self.glob_rank, self.cconf.ddp.nprocs))
-            ctip('cyan', 'bold', "RANK: %d GANK: %d NODE: %d" % (self.local_rank, self.glob_rank, self.cconf.ddp.nprocs), show=True)
-            dist.init_process_group(backend='nccl', init_method=self.cconf.ddp.dist_url, world_size=self.cconf.ddp.nprocs, rank=self.glob_rank)
+            ctip('cyan', 'bold', "MACHINE: %d/%d RANK: %d GANK: %d NODE: %d" % (
+                self.cconf.idx_machine, self.cconf.num_machine,
+                self.local_rank, self.glob_rank, self.cconf.ddp.nprocs), show=True)
 
-        self.gpu_idx = self.cconf.gpus#[i for i in range(len(self.cconf.gpu_idx))]
+            dist.init_process_group(
+                backend='nccl',
+                init_method=self.cconf.ddp.dist_url,
+                world_size=self.cconf.ddp.nprocs,
+                rank=self.glob_rank)
+
+        self.gpu_idx = self.cconf.gpus
 
     def __init_seed(self):
         seed = self.cconf.seed
@@ -388,14 +450,21 @@ class Engine(CallBackList):
 
         random.seed(seed)
         np.random.seed(seed)
-        torch.manual_seed(seed) # sets the seed for generating random numbers.
-        torch.cuda.manual_seed(seed) # Sets the seed for generating random numbers for the current GPU. It’s safe to call this function if CUDA is not available; in that case, it is silently ignored.
-        torch.cuda.manual_seed_all(seed) # Sets the seed for generating random numbers on all GPUs. It’s safe to call this function if CUDA is not available; in that case, it is silently ignored.
+        # sets the seed for generating random numbers.
+        torch.manual_seed(seed)
+        # Sets the seed for generating random numbers for the current GPU.
+        # It’s safe to call this function if CUDA is not available; in that case, it is silently ignored.
+        torch.cuda.manual_seed(seed)
+        # Sets the seed for generating random numbers on all GPUs.
+        # It’s safe to call this function if CUDA is not available; in that case, it is silently ignored.
+        torch.cuda.manual_seed_all(seed)
 
-        if cuda_deterministic: # slower, more deterministic
+        if cuda_deterministic:
+            # slower, more deterministic
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
-        else: # faster, less deterministic
+        else:
+            # faster, less deterministic
             torch.backends.cudnn.deterministic = False
             torch.backends.cudnn.benchmark = True
 
@@ -409,18 +478,18 @@ class Engine(CallBackList):
         Returns:
             nn.Module: DP,DDP or Single GPU Network
         """
-        if self.cconf.backend == 'ddp' and self.cconf.mode != 'export':
+        if self.cconf.backend == 'ddp':
             torch.cuda.set_device(self.local_rank)
             if learnable:
                 net = torch.nn.SyncBatchNorm.convert_sync_batchnorm(net)
                 net.cuda(self.local_rank)
 
-                net = torch.nn.parallel.DistributedDataParallel(net,
-                                                                device_ids=[self.local_rank],
-                                                                find_unused_parameters=self.cconf['ddp']['find_unused_parameters'])
+                net = torch.nn.parallel.DistributedDataParallel(
+                    net, device_ids=[self.local_rank],
+                    find_unused_parameters=self.cconf['ddp']['find_unused_parameters'])
             else:
                 net.cuda(self.local_rank)
-        elif self.cconf.backend == 'dp' and self.cconf.mode != 'export':
+        elif self.cconf.backend == 'dp':
             torch.cuda.set_device(self.gpu_idx[0])
             net.cuda(self.gpu_idx[0])
             if learnable:
@@ -472,7 +541,8 @@ class Engine(CallBackList):
         if self.cconf.mode != 'train':
             info = '[%s(%s)] all param: %.6f(MB)' % (name, type(net).__name__, param['all'])
         else:
-            info = '[%s(%s)] all param: %.6f learnable: %.6f' % (name, type(net).__name__, param['all'], param['learnable'])
+            info = '[%s(%s)] all param: %.6f learnable: %.6f' % (name, type(net).__name__,
+                                                                 param['all'], param['learnable'])
         if self.local_rank <= 0:
             self.logger.info(info)
 
@@ -581,8 +651,9 @@ class Engine(CallBackList):
     def clip_grad(self, cval, name=None):
         if cval is not None:
             net = self.get_net(name)
-            nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, net.parameters()),
-                            max_norm=cval)
+            nn.utils.clip_grad_norm_(
+                filter(lambda p: p.requires_grad, net.parameters()),
+                max_norm=cval)
 
     def get_data(self, idx=0, *vars):
         assert self.cconf.mode == 'train', 'Error: get_data just support in "mode: train"'
@@ -593,22 +664,6 @@ class Engine(CallBackList):
             new_var.append(data[start:stop])
 
         return new_var
-
-    def forward_withpart(self, index, name=None, *vars, **invars):
-        """
-            vars: 表示顺序输入的变量（都是可分割的）
-            invars: 表示不可变量，以字典形式输入
-        """
-
-        net = self.get_net(name=name)
-        if self.cconf.backend == 'ddp':
-            with net.no_sync():
-                inp = self.get_data(index, *vars)
-                outs = net(*inp, **invars)
-        else:
-            inp = self.get_data(index, *vars)
-            outs = net(*inp, **invars)
-        return outs
 
     def forward(self, *args, **kwargs):
         names = list(self._nets.keys())
@@ -671,7 +726,7 @@ class Engine(CallBackList):
         return ds
 
     def __resume(self, model_path):
-        if self.local_rank <= 0 and os.path.isfile(model_path):
+        if self.glob_rank <= 0 and os.path.isfile(model_path):
             strict = False if self.cconf.mode == 'train' else True
             ret = load_spec_wgts(model_path, self._nets, strict, show=True)
             try:
@@ -693,10 +748,11 @@ class Engine(CallBackList):
         mode = self.cconf.mode
         self.__resume(self.cconf.ckpt_path)
 
-        #create network
+        # create network
         for name in self._nets.keys():
             if not self._nets[name]['bind']:
-                self._nets[name]['model'] = self.__create_network(self._nets[name]['model'], self._nets[name]['learnable'])
+                self._nets[name]['model'] = self.__create_network(self._nets[name]['model'],
+                                                                  self._nets[name]['learnable'])
                 self._nets[name]['bind'] = True
 
         # wait for create net work
@@ -723,7 +779,7 @@ class Engine(CallBackList):
             self._train(train_loader, test_loader, 0, self.cconf.max_epoch)
         else:
             if self.local_rank <= 0:
-                self.logger.error("please set mode to [test, train]")
+                self.logger.error("please set mode to [example, train]")
 
 
 def vrun_func(local_rank, glob_rank, conf, cbs, Module):
@@ -731,15 +787,18 @@ def vrun_func(local_rank, glob_rank, conf, cbs, Module):
     if cconf['ddp']['use_spawn']:
         glob_rank = local_rank
     app_name = '%s_%s.log' % (cconf.job_name, cconf.mode)
-    logf = os.path.join(cconf['paths']['root'], app_name)
+    logf_path = os.path.join(cconf['paths']['root'], app_name)
     logger.remove(handler_id=None)
-    #logger.add(logf, rotation='50 MB', enqueue=cconf.backend=='ddp')
-    logger.add(logf, rotation='50 MB', enqueue=(cconf.backend == 'ddp'),
-                format='<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>')
+    logger.add(logf_path,
+               rotation='50 MB',
+               enqueue=(cconf.backend == 'ddp'),
+               format='<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | \
+                    <level>{level: <8}</level> | <level>{message}</level>')
 
     module = Module(conf=conf, cbs=cbs, logger=logger, local_rank=local_rank, glob_rank=glob_rank)
 
     module.run()
+
 
 def vrun(Module, cbs=[]):
     ef = EngineFileSystem()
@@ -747,11 +806,6 @@ def vrun(Module, cbs=[]):
     conf = ef.deploy()
 
     cconf = conf['common']
-
-    if conf['vtraining']['enable']:
-        assert not cconf['ddp']['use_spawn'], "vtraining can not with use_spawn together"
-    else:
-        conf.remove('vtraining')
 
     if cconf.backend == 'ddp':
         if cconf['ddp']['use_spawn']:

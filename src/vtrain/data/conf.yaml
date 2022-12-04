@@ -1,0 +1,20 @@
+common:
+  job_name: "vivo-mnist"
+  job_desc: "just a demo project config"
+  save_root: "/data01/dingzhifeng/dwork/gitlab/mnist/data"
+  mode: "train" # ["train", "example"]
+  gpu_idx: [[0, 1]] # 1. 单机多卡/单卡 [0, 1, 2] | [[0, 1, 2]] 2. 单机多卡 [[0, 1, 2], [0, 1, 2]]
+  backend: "sgpu" # ["ddp", "dp", "sgpu"]
+  seed: 0
+  cuda_deterministic: true
+  ddp:
+    find_unused_parameters: true
+    use_spawn: false
+  max_epoch: 2
+  verbose_interval: 5
+  ckpt_path: None
+  checkpoint:
+    save_each_iter: ~
+    save_maxs: 50
+    watch_value: ~
+    best_type: 'max'

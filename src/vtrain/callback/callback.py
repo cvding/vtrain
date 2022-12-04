@@ -1,9 +1,10 @@
-
+from typing import List
 
 
 class CallBack(object):
     _EPOCH_INDEX = 0
     _GLOB_STEP = 0
+
     def __init__(self, logger=None, local_rank=-1, glob_rank=-1):
         self.logger = logger
         self.local_rank = local_rank
@@ -58,7 +59,7 @@ class CallBack(object):
 
 
 class CallBackList(CallBack):
-    def __init__(self, cbs:list=[], logger=None, local_rank=-1, glob_rank=-1):
+    def __init__(self, cbs: List = [], logger=None, local_rank=-1, glob_rank=-1):
         super().__init__()
         __cbs = []
         for cb in cbs:

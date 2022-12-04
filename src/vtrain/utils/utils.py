@@ -5,18 +5,22 @@ import socket
 import torch.nn as nn
 from collections import OrderedDict
 
+
 def show_time(show):
     def func_time(func):
-        def inner(*args,**kw):
+        def inner(*args, **kw):
             start_time = time.time()
-            func(*args,**kw)
+            func(*args, **kw)
             end_time = time.time()
             rtime = end_time - start_time
             if show:
-                print('函数运行时间为：',rtime,'s')
+                print('函数运行时间为：', rtime, 's')
             return rtime
+
         return inner
+
     return func_time
+
 
 def load_wgts(net, state_dict, strict=True, show=True):
     """加载权重
@@ -64,15 +68,16 @@ def load_wgts(net, state_dict, strict=True, show=True):
 
         if show:
             print('%s: Some params were not loaded:' % type(net).__name__)
-            #print(('%s, ' * (len(not_loaded_keys) - 1) + '%s') % tuple(not_loaded_keys))
+            # print(('%s, ' * (len(not_loaded_keys) - 1) + '%s') % tuple(not_loaded_keys))
             print("load %d keys of %d" % (len(pretrained_dict), len(src)))
         if nkey == 0:
-            return None 
+            return None
 
     dst.update(pretrained_dict)
     net.load_state_dict(dst)
 
     return net
+
 
 def save_wgts(net, path, odict={}):
     """保存权重
@@ -92,8 +97,9 @@ def save_wgts(net, path, odict={}):
     save_dict.update(odict)
     torch.save(save_dict, path)
 
-def save_spec_wgts(path, nets:dict, glob_step, epoch_index):
-    save_dict = {"glob_step": glob_step, "epoch_index": epoch_index} 
+
+def save_spec_wgts(path, nets: dict, glob_step, epoch_index):
+    save_dict = {"glob_step": glob_step, "epoch_index": epoch_index}
     for name in nets.keys():
         state_dict = nets[name]['model'].state_dict()
         temp_dict = OrderedDict()
@@ -102,65 +108,21 @@ def save_spec_wgts(path, nets:dict, glob_step, epoch_index):
             temp_dict[mkey] = state_dict[key].cpu()
 
         save_dict[name] = {"state_dict": temp_dict}
-    
+
     torch.save(save_dict, path)
 
-def load_spec_wgts(path, nets:dict, strict=True, show=True):
+
+def load_spec_wgts(path, nets: dict, strict=True, show=True):
     ckpts = torch.load(path, map_location='cpu')
 
     for key in nets.keys():
         load_wgts(nets[key]['model'], ckpts[key]['state_dict'], strict=strict, show=show)
-    
+
     glob_step = ckpts['glob_step']
     epoch_index = ckpts['epoch_index']
 
     return glob_step, epoch_index
 
-def create_dataloader(dataset, **loader_params):
-    """创建一个数据装载器
-    
-    Args:
-        dataset (Dataset): torch类型的dataset
-        loader_params (dict): 详见torch.utils.data.DataLoader的输入参数
-    
-    Returns:
-        DataLoader: torch类型的DataLoader
-    """
-    loader = None
-    if dataset is not None:
-        collate_fn = dataset.collate if hasattr(dataset, 'collate') else None
-        params = loader_params.copy()
-        params['collate_fn'] = params['collate_fn'] if hasattr(params, 'collate_fn') else collate_fn 
-        if 'shuffle' not in params:
-            params['shuffle'] = False if not hasattr(dataset, 'shuffle') else dataset.shuffle
-
-        loader = torch.utils.data.DataLoader(dataset, **params)
-    return loader, None
-    
-def create_distributedloader(dataset, **loader_params):
-    """创建一个分布式数据装载器
-    
-    Args:
-        dataset (Dataset): torch类型的dataset
-        loader_params (dict): 详见torch.utils.data.DataLoader的输入参数
-    
-    Returns:
-        DataLoader: torch类型的DataLoader
-    """
-    loader = None
-    if dataset is not None:
-        collate_fn = dataset.collate if hasattr(dataset, 'collate') else None
-        params = loader_params.copy()
-        if 'shuffle' not in params:
-            params['shuffle'] = False if not hasattr(dataset, 'shuffle') else dataset.shuffle
-        sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=params['shuffle'])
-
-        params['sampler'] = sampler
-        params['collate_fn'] = params['collate_fn'] if hasattr(params, 'collate_fn') else collate_fn
-        params['shuffle'] = False
-
-        loader = torch.utils.data.DataLoader(dataset, **params)
-    return loader, sampler
 
 def model_parameters(model):
     """计算模型的参数量
@@ -178,13 +140,14 @@ def model_parameters(model):
     for p in model.parameters():
         np = p.numel()
         if p.requires_grad:
-            params['learnable'] += np 
+            params['learnable'] += np
         params['all'] += np
 
-    params['all'] /= mb # MB
-    params['learnable'] /= mb 
+    params['all'] /= mb  # MB
+    params['learnable'] /= mb
 
     return params
+
 
 def frozen_layers(model, layer_names=[]):
     """冻结模型中某一层或几层的参数
@@ -203,8 +166,9 @@ def frozen_layers(model, layer_names=[]):
             param.requires_grad = False
             names.append(name)
         else:
-            param.requires_grad = True 
+            param.requires_grad = True
     return names
+
 
 def finetune_layers(model, layer_names=[]):
     """finetune模型中某一层或几层的参数
@@ -219,12 +183,13 @@ def finetune_layers(model, layer_names=[]):
 
     names = []
     for name, param in model.named_parameters():
-        if re.search(pattern, name) and len(layer_names) !=0:
+        if re.search(pattern, name) and len(layer_names) != 0:
             param.requires_grad = True
             names.append(name)
         else:
             param.requires_grad = False
-    return names 
+    return names
+
 
 def model_layers(model):
     """打印模型所有参数
@@ -234,6 +199,7 @@ def model_layers(model):
     """
     for name, param in model.named_parameters():
         print(name, list(param.size()))
+
 
 def split_param(net, layer_names=[]):
     """分割参数
@@ -250,14 +216,16 @@ def split_param(net, layer_names=[]):
         idp = id(param)
         if name in layer_names:
             idparam.append(idp)
-    
+
     oparams = filter(lambda x: x not in idparam, net.parameters())
     iparams = filter(lambda x: x in idparam, net.parameters())
 
     return oparams, iparams
 
+
 def count_param(parameters):
     return len(list(map(id, parameters)))
+
 
 def get_mean_and_std(dataset):
     '''Compute the mean and std value of dataset.'''
@@ -277,13 +245,16 @@ def get_mean_and_std(dataset):
     std.div_(len(dataset))
     return mean, std
 
+
 def is_parallel(model):
     # Returns True if model is of type DP or DDP
     return type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
 
+
 def de_parallel(model):
     # De-parallelize a model: returns single-GPU model if model is of type DP or DDP
     return model.module if is_parallel(model) else model
+
 
 def fuse_conv_and_bn(conv, bn):
     # Fuse convolution and batchnorm layers https://tehnokv.com/posts/fusing-batchnorm-and-conv/
@@ -307,6 +278,7 @@ def fuse_conv_and_bn(conv, bn):
 
     return fusedconv
 
+
 def find_free_port():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -314,7 +286,3 @@ def find_free_port():
     sockname = sock.getsockname()
     sock.close()
     return sockname[1]
-
-class Empty(object):
-    def set_epoch(self, epoch):
-        pass 
